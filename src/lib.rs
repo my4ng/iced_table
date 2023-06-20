@@ -41,15 +41,43 @@ pub mod table {
             on_column_drag: None,
             on_column_release: None,
             min_width: 0.0,
-            min_column_width: 4.0,
             divider_width: 2.0,
             cell_padding: 4.into(),
             style: Default::default(),
-            scrollable_properties: Box::new(|| Default::default()),
+            scrollable_properties: Box::new(Default::default),
         }
     }
 
-    /// Defines what a column looks like for each [`Row`](Self::Row) of data.
+    /// The type used to determine how the width of a [`Column`] should be calculated.
+    #[derive(Debug, Copy, Clone)]
+    pub enum Width {
+        /// Fixed width; the width cannot be resized.
+        Fixed(f32),
+        /// Resizable width, where the current width is the sum of initial and offset.
+        /// The current width can be clamped to a range by the consumer.
+        Resizable {
+            /// Initial width.
+            initial: f32,
+            /// Temporary offset when dragged.
+            offset: f32,
+        },
+        /// Fill the remaining width of the table based on the proportion specified,
+        /// shared with all other [`Column`] in the same table.
+        Fill {
+            /// Proprotion between all fill columns.
+            proportion: u32,
+            /// Minimum width (or `0.0f32` to represent no minimum).
+            minimum: f32,
+        },
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct CalculatedWidth {
+        current: f32,
+        is_resizable: bool, // only applicable to resizable widths
+    }
+
+    /// Defines what a column looks like for each [`Row`](Column::Row) of data.
     pub trait Column<'a, 'b, Message, Renderer> {
         /// A row of data.
         type Row;
@@ -74,11 +102,8 @@ pub mod table {
             None
         }
 
-        /// Return the fixed width for this column.
-        fn width(&self) -> f32;
-
-        /// Return the offset of an on-going resize of this column.
-        fn resize_offset(&self) -> Option<f32>;
+        /// Return the width type for this column.
+        fn width(&self) -> Width;
     }
 
     /// An element to display rows of data into columns.
@@ -97,7 +122,6 @@ pub mod table {
         on_column_drag: Option<fn(usize, f32) -> Message>,
         on_column_release: Option<Message>,
         min_width: f32,
-        min_column_width: f32,
         divider_width: f32,
         cell_padding: Padding,
         style: <Renderer::Theme as style::StyleSheet>::Style,
@@ -144,14 +168,6 @@ pub mod table {
         /// the table always fills the width of it's parent container.
         pub fn min_width(self, min_width: f32) -> Self {
             Self { min_width, ..self }
-        }
-
-        /// Sets the minimum width a column can be resized to.
-        pub fn min_column_width(self, min_column_width: f32) -> Self {
-            Self {
-                min_column_width,
-                ..self
-            }
         }
 
         /// Sets the width of the column dividers.
@@ -209,30 +225,31 @@ pub mod table {
                 on_column_drag,
                 on_column_release,
                 min_width,
-                min_column_width,
                 divider_width,
                 cell_padding,
                 style,
                 scrollable_properties,
             } = table;
 
+            let (calaculated_widths, unused_width) = distribute_fill_widths(columns, min_width);
+
             let header = scrollable(style::wrapper::header(
                 row(columns
                     .iter()
+                    .zip(calaculated_widths.iter())
                     .enumerate()
-                    .map(|(index, column)| {
+                    .map(|(index, (column, &calculated_width))| {
                         header_container(
                             index,
                             column,
+                            calculated_width,
                             on_column_drag,
                             on_column_release.clone(),
-                            min_column_width,
                             divider_width,
                             cell_padding,
                             style.clone(),
                         )
                     })
-                    .chain(dummy_container(columns, min_width, min_column_width))
                     .collect()),
                 style.clone(),
             ))
@@ -257,31 +274,29 @@ pub mod table {
                         style::wrapper::row(
                             row(columns
                                 .iter()
+                                .zip(calaculated_widths.iter())
                                 .enumerate()
-                                .map(|(col_index, column)| {
+                                .map(|(col_index, (column, &calculated_width))| {
                                     body_container(
                                         col_index,
                                         row_index,
+                                        calculated_width,
                                         column,
                                         _row,
-                                        min_column_width,
                                         divider_width,
                                         cell_padding,
                                     )
                                 })
-                                .chain(dummy_container(columns, min_width, min_column_width))
                                 .collect()),
                             style.clone(),
                             row_index,
                         )
-                        .into()
                     })
                     .collect(),
             ))
             .id(body)
             .on_scroll(move |viewport| {
                 let offset = viewport.absolute_offset();
-
                 (on_sync)(scrollable::AbsoluteOffset { y: 0.0, ..offset })
             })
             .horizontal_scroll((scrollable_properties)())
@@ -292,21 +307,21 @@ pub mod table {
                 scrollable(style::wrapper::footer(
                     row(columns
                         .iter()
+                        .zip(calaculated_widths.iter())
                         .enumerate()
-                        .map(|(index, column)| {
+                        .map(|(index, (column, &calculated_width))| {
                             footer_container(
                                 index,
                                 column,
+                                calculated_width,
                                 rows,
                                 on_column_drag,
                                 on_column_release.clone(),
-                                min_column_width,
                                 divider_width,
                                 cell_padding,
                                 style.clone(),
                             )
                         })
-                        .chain(dummy_container(columns, min_width, min_column_width))
                         .collect()),
                     style,
                 ))
@@ -331,16 +346,22 @@ pub mod table {
                 column = column.push(footer);
             }
 
-            column.height(Length::Fill).into()
+            let mut table_container = container(column).height(Length::Fill).width(Length::Shrink);
+
+            if let Some(unused_width) = unused_width {
+                table_container = table_container.padding([0.0, unused_width, 0.0, 0.0]);
+            }
+
+            table_container.into()
         }
     }
 
     fn header_container<'a, 'b, Column, Row, Message, Renderer>(
         index: usize,
         column: &'b Column,
+        calculated_width: CalculatedWidth,
         on_drag: Option<fn(usize, f32) -> Message>,
         on_release: Option<Message>,
-        min_column_width: f32,
         divider_width: f32,
         cell_padding: Padding,
         style: <Renderer::Theme as style::StyleSheet>::Style,
@@ -358,11 +379,10 @@ pub mod table {
 
         with_divider(
             index,
-            column,
+            calculated_width,
             content,
             on_drag,
             on_release,
-            min_column_width,
             divider_width,
             style,
         )
@@ -371,11 +391,11 @@ pub mod table {
     fn body_container<'a, 'b, Column, Row, Message, Renderer>(
         col_index: usize,
         row_index: usize,
+        calculated_width: CalculatedWidth,
         column: &'b Column,
         row: &'b Row,
-        min_column_width: f32,
         divider_width: f32,
-        cell_padding: Padding,
+        mut cell_padding: Padding,
     ) -> Element<'a, Message, Renderer>
     where
         Renderer: iced_core::Renderer + 'a,
@@ -383,26 +403,23 @@ pub mod table {
         Column: self::Column<'a, 'b, Message, Renderer, Row = Row>,
         Message: 'a + Clone,
     {
-        let width = column.width() + column.resize_offset().unwrap_or_default();
+        if calculated_width.is_resizable {
+            cell_padding.right += divider_width;
+        }
 
-        let content = container(column.cell(col_index, row_index, row))
-            .width(Length::Fill)
-            .padding(cell_padding);
-
-        let spacing = Space::new(divider_width, Length::Shrink);
-
-        row![content, spacing]
-            .width(width.max(min_column_width))
+        container(column.cell(col_index, row_index, row))
+            .width(calculated_width.current)
+            .padding(cell_padding)
             .into()
     }
 
     fn footer_container<'a, 'b, Column, Row, Message, Renderer>(
         index: usize,
         column: &'b Column,
+        calculated_width: CalculatedWidth,
         rows: &'b [Row],
         on_drag: Option<fn(usize, f32) -> Message>,
         on_release: Option<Message>,
-        min_column_width: f32,
         divider_width: f32,
         cell_padding: Padding,
         style: <Renderer::Theme as style::StyleSheet>::Style,
@@ -425,79 +442,106 @@ pub mod table {
 
         with_divider(
             index,
-            column,
+            calculated_width,
             content,
             on_drag,
             on_release,
-            min_column_width,
             divider_width,
             style,
         )
     }
 
-    fn with_divider<'a, 'b, Column, Row, Message, Renderer>(
+    fn with_divider<'a, Message, Renderer>(
         index: usize,
-        column: &'b Column,
+        calculated_width: CalculatedWidth,
         content: Element<'a, Message, Renderer>,
         on_drag: Option<fn(usize, f32) -> Message>,
         on_release: Option<Message>,
-        min_column_width: f32,
         divider_width: f32,
         style: <Renderer::Theme as style::StyleSheet>::Style,
     ) -> Element<'a, Message, Renderer>
     where
         Renderer: iced_core::Renderer + 'a,
         Renderer::Theme: style::StyleSheet + container::StyleSheet,
-        Column: self::Column<'a, 'b, Message, Renderer, Row = Row>,
         Message: 'a + Clone,
     {
-        let width =
-            (column.width() + column.resize_offset().unwrap_or_default()).max(min_column_width);
-
+        let current = calculated_width.current;
         if let Some((on_drag, on_release)) = on_drag.zip(on_release) {
-            let old_width = column.width();
-
-            container(Divider::new(
-                content,
-                divider_width,
-                move |offset| {
-                    let new_width = (old_width + offset).max(min_column_width);
-
-                    (on_drag)(index, new_width - old_width)
-                },
-                on_release,
-                style,
-            ))
-            .width(width)
-            .into()
-        } else {
-            row![content, Space::new(divider_width, Length::Shrink)]
-                .width(width)
-                .into()
+            if calculated_width.is_resizable {
+                return container(Divider::new(
+                    content,
+                    divider_width,
+                    move |offset| (on_drag)(index, offset),
+                    on_release,
+                    style,
+                ))
+                .width(current)
+                .into();
+            }
         }
+
+        container(content).width(current).into()
     }
 
-    // Used to enforce "min_width"
-    fn dummy_container<'a, 'b, Column, Row, Message, Renderer>(
+    // If there is no fill column, return `remaining_width` if positive.
+    //
+    // If there is at least one, then distribute the remaining width, based on their proportions,
+    // to fill the remaining width.
+    //
+    // If there is no remaining space or if the distributed width is less than their minimum width,
+    // then use the minimum instead.
+    fn distribute_fill_widths<'a, 'b, Column, Row, Message, Renderer>(
         columns: &'b [Column],
         min_width: f32,
-        min_column_width: f32,
-    ) -> Option<Element<'a, Message, Renderer>>
+    ) -> (Vec<CalculatedWidth>, Option<f32>)
     where
         Renderer: iced_core::Renderer + 'a,
         Renderer::Theme: style::StyleSheet + container::StyleSheet,
         Column: self::Column<'a, 'b, Message, Renderer, Row = Row>,
         Message: 'a + Clone,
     {
-        let total_width: f32 = columns
+        let mut fill_proportion = 0;
+        let mut remaining_width = min_width;
+
+        columns.iter().for_each(|column| match column.width() {
+            Width::Fixed(current) => remaining_width -= current,
+            Width::Resizable {
+                initial, offset, ..
+            } => remaining_width -= initial + offset,
+            Width::Fill { proportion, .. } => fill_proportion += proportion,
+        });
+
+        // Calculate the width of a single part to avoid division for every fill column
+        let part_width = if fill_proportion != 0 {
+            remaining_width / fill_proportion as f32
+        } else {
+            0.0
+        };
+
+        let calculated_widths = columns
             .iter()
-            .map(|column| {
-                (column.width() + column.resize_offset().unwrap_or_default()).max(min_column_width)
+            .map(|column| match column.width() {
+                Width::Fixed(current) => CalculatedWidth {
+                    current,
+                    is_resizable: false,
+                },
+                Width::Resizable { initial, offset } => CalculatedWidth {
+                    current: initial + offset,
+                    is_resizable: true
+                },
+                Width::Fill {
+                    proportion,
+                    minimum,
+                } => CalculatedWidth {
+                    current: (proportion as f32 * part_width).max(minimum),
+                    is_resizable: false,
+                },
             })
-            .sum();
+            .collect();
 
-        let remaining = min_width - total_width;
+        let unused_width =
+            (remaining_width > 0.0 && fill_proportion == 0).then_some(remaining_width);
 
-        (remaining > 0.0).then(|| container(Space::with_width(remaining)).into())
+        (calculated_widths, unused_width)
     }
 }

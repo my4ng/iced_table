@@ -2,7 +2,7 @@ use std::fmt;
 
 use iced::widget::{checkbox, column, container, horizontal_space, responsive, scrollable, text};
 use iced::{Application, Command, Element, Length, Renderer, Theme};
-use iced_table::table;
+use iced_table::table::{self, Width};
 
 fn main() {
     App::run(Default::default()).unwrap()
@@ -35,11 +35,35 @@ impl Default for App {
     fn default() -> Self {
         Self {
             columns: vec![
-                Column::new(Letter::A),
-                Column::new(Letter::B),
-                Column::new(Letter::C),
-                Column::new(Letter::D),
-                Column::new(Letter::E),
+                Column::new(Letter::A, Width::Fixed(100.0)),
+                Column::new(
+                    Letter::B,
+                    Width::Resizable {
+                        initial: 100.0,
+                        offset: 0.0,
+                    },
+                ),
+                Column::new(
+                    Letter::C,
+                    Width::Fill {
+                        proportion: 2,
+                        minimum: 150.0,
+                    },
+                ),
+                Column::new(
+                    Letter::D,
+                    Width::Fill {
+                        proportion: 1,
+                        minimum: 100.0,
+                    },
+                ),
+                Column::new(
+                    Letter::E,
+                    Width::Resizable {
+                        initial: 100.0,
+                        offset: 0.0,
+                    },
+                ),
             ],
             rows: (1..=50).collect(),
             header: scrollable::Id::unique(),
@@ -81,12 +105,21 @@ impl Application for App {
             }
             Message::Resizing(index, offset) => {
                 if let Some(column) = self.columns.get_mut(index) {
-                    column.resize_offset = Some(offset);
+                    if let Width::Resizable {
+                        initial, offset: old_offset
+                    } = &mut column.width
+                    {
+                        *old_offset = (*initial + offset).clamp(50.0, 250.0) - *initial;
+                    }
                 }
             }
             Message::Resized => self.columns.iter_mut().for_each(|column| {
-                if let Some(offset) = column.resize_offset.take() {
-                    column.width += offset;
+                if let Width::Resizable {
+                    initial, offset
+                } = &mut column.width
+                {
+                    *initial = (*initial + *offset).clamp(50.0, 250.0);
+                    *offset = 0.0;
                 }
             }),
             Message::ResizeColumnsEnabled(enabled) => self.resize_columns_enabled = enabled,
@@ -106,7 +139,7 @@ impl Application for App {
 
     fn view(&self) -> Element<Self::Message> {
         let table = responsive(|size| {
-            let mut table = table(
+            let mut table = table::table(
                 self.header.clone(),
                 self.body.clone(),
                 &self.columns,
@@ -160,17 +193,12 @@ impl Application for App {
 
 struct Column {
     letter: Letter,
-    width: f32,
-    resize_offset: Option<f32>,
+    width: Width,
 }
 
 impl Column {
-    fn new(letter: Letter) -> Self {
-        Self {
-            letter,
-            width: 100.0,
-            resize_offset: None,
-        }
+    fn new(letter: Letter, width: Width) -> Self {
+        Self { letter, width }
     }
 }
 
@@ -227,11 +255,7 @@ impl<'a, 'b> table::Column<'a, 'b, Message, Renderer> for Column {
         Some(container(content).height(24).center_y().into())
     }
 
-    fn width(&self) -> f32 {
+    fn width(&self) -> Width {
         self.width
-    }
-
-    fn resize_offset(&self) -> Option<f32> {
-        self.resize_offset
     }
 }

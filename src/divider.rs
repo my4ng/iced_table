@@ -63,8 +63,7 @@ where
 
     fn is_content_hovered(&self, mut bounds: Rectangle, cursor_position: Point) -> bool {
         // Ignore left edge to not conflict with other dividers
-        bounds.x = (bounds.x + 5.0).min(bounds.x + bounds.width - 5.0);
-
+        bounds.x += (bounds.width - 5.0).clamp(0.0, 5.0);
         bounds.contains(cursor_position)
     }
 }
@@ -140,9 +139,9 @@ where
                         return event::Status::Captured;
                     }
                 }
-                mouse::Event::CursorMoved { .. } if cursor_position != Point::new(-1.0, -1.0) => {
+                mouse::Event::CursorMoved { position } => {
                     if let Some(origin) = state.drag_origin {
-                        shell.publish((self.on_drag)((cursor_position - origin).x));
+                        shell.publish((self.on_drag)((position - origin).x));
                         return event::Status::Captured;
                     }
                 }
@@ -220,7 +219,7 @@ where
 
                 Rectangle {
                     x: position.x.floor(),
-                    y: position.y.floor(),
+                    y: position.y,
                     width: self.width,
                     ..bounds
                 }
@@ -229,7 +228,7 @@ where
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: snap(self.divider_bounds(layout.bounds())),
-                    border_radius: appearance.border_radius.into(),
+                    border_radius: appearance.border_radius,
                     border_width: appearance.border_width,
                     border_color: appearance.border_color,
                 },
