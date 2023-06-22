@@ -2,10 +2,10 @@
 name = "iced_table"
 version = "0.1.0"
 edition = "2021"
-authors = ["tarkah <admin@tarkah.dev>"]
+authors = ["my4ng <michael626yang@gmail.com", "tarkah <admin@tarkah.dev>"]
 description = "A table widget for Iced"
 license = "MIT"
-repository = "https://github.com/tarkah/iced_table"
+repository = "https://github.com/my4ng/iced_table"
 
 [workspace]
 default-members = [
